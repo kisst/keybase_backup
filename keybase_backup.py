@@ -27,39 +27,28 @@ def chat2folder(chat_name):
     return folder_name
 
 
-def kb_call(api_data):
+def kb_call(method, options={}):
     """
-    Given a dict, send it to keybase api,
+    call keybase api with given method and options
     and return the response
 
     due to lack of tcp listener for the api
     it's based on subprocess.run
     """
-    if isinstance(api_data, dict):
-        result = subprocess.run(
-            ["/usr/bin/keybase", "chat", "api", "-m", json.dumps(api_data)],
-            capture_output=True,
-            check=True,
-        )
-        dict_str = result.stdout.decode("UTF-8")[:-1]
-        response = json.loads(dict_str)
-        return True, response
-    else:
-        print("The input isn't a dict, we can't convert it to JSON")
-        return False, None
-
-
-def get_next(pagination):
-    """
-    Helper function to detect if it's last page
-    if not return the next page ID
-    """
-    try:
-        if pagination["last"]:
-            return True, None
-    except KeyError:
-        next_page = pagination["next"]
-        return False, next_page
+    data = {
+        "method": method,
+        "params": {
+            "options": options,
+        },
+    }
+    result = subprocess.run(
+        ["/usr/bin/keybase", "chat", "api", "-m", json.dumps(data)],
+        capture_output=True,
+        check=True,
+    )
+    output = result.stdout.decode("UTF-8")[:-1]
+    response = json.loads(output)
+    return response["result"]
 
 
 def download(message):
@@ -68,55 +57,51 @@ def download(message):
     """
     if message["msg"]["content"]["type"] != "attachment":
         print("The message is not an attachment")
-        return False
-    else:
-        message_id = message["msg"]["id"]
-        conversation_id = message["msg"]["conversation_id"]
-        folder = chat2folder(message["msg"]["channel"]["name"])
-        attachment_filename = "{}/{}_{}".format(
-            folder,
-            str(message_id),
-            message["msg"]["content"]["attachment"]["object"]["filename"],
-        )
-        download_ask = {}
-        download_ask["method"] = "download"
-        download_ask["params"] = {}
-        download_ask["params"]["options"] = {}
-        download_ask["params"]["options"]["message_id"] = message_id
-        download_ask["params"]["options"]["output"] = attachment_filename
-        download_ask["params"]["options"]["conversation_id"] = conversation_id
-        print("Writing " + attachment_filename)
-        file_exists = os.path.exists(attachment_filename)
-        if not file_exists:
-            kb_call(download_ask)
+        return
+
+    message_id = message["msg"]["id"]
+    conversation_id = message["msg"]["conversation_id"]
+    folder = chat2folder(message["msg"]["channel"]["name"])
+    attachment_filename = "{}/{}_{}".format(
+        folder,
+        str(message_id),
+        message["msg"]["content"]["attachment"]["object"]["filename"],
+    )
+    print("Writing " + attachment_filename)
+    file_exists = os.path.exists(attachment_filename)
+    if not file_exists:
+        kb_call("download", {
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "output": attachment_filename,
+        })
 
 
 def get_chat_history(conversation_id, page=None):
     """
     wrapper to get a chat history, base on it's conversation_id
     """
-    chat_history = []
-    chat_history_ask = {}
-    chat_history_ask["method"] = "read"
-    chat_history_ask["params"] = {}
-    chat_history_ask["params"]["options"] = {}
-    chat_history_ask["params"]["options"]["conversation_id"] = conversation_id
-    if page:
-        chat_history_ask["params"]["options"]["pagination"] = {}
-        chat_history_ask["params"]["options"]["pagination"]["next"] = page
-        chat_history_ask["params"]["options"]["pagination"]["num"] = 1000
-    status, chat_history_part = kb_call(chat_history_ask)
-    if status:
-        chat_history = chat_history + chat_history_part["result"]["messages"]
-        last, next_page = get_next(chat_history_part["result"]["pagination"])
-        if not last:
-            chat_history_last_part = get_chat_history(conversation_id, next_page)
-            if chat_history_last_part:
-                chat_history = chat_history + chat_history_last_part
-        return chat_history
-    else:
-        print("Unsuccesfull call")
-        return []
+    options = {
+        "conversation_id": conversation_id,
+    }
+    if page is not None:
+        options = options | {
+            "pagination": {
+                "next": page,
+                "num": 1000,
+            }
+        }
+
+    response = kb_call("read", options)
+
+    messages = response["messages"]
+    last = response["pagination"].get("last", False)
+    next_page = response["pagination"]["next"]
+
+    if last:
+        return messages
+
+    return messages + get_chat_history(conversation_id, next_page)
 
 
 def save_history(history, folder):
@@ -145,12 +130,10 @@ def get_chat_list():
     and loop across them for backup
     this is the main function of the script
     """
-    chat_list_ask = {}
-    chat_list_ask["method"] = "list"
-    status, chat_list = kb_call(chat_list_ask)
+    chat_list = kb_call("list")
     # better do it when we are online
-    if not chat_list["result"]["offline"] and status:
-        for conversation in chat_list["result"]["conversations"]:
+    if not chat_list["offline"]:
+        for conversation in chat_list["conversations"]:
             if conversation["id"] not in EXCLUDE:
                 folder = chat2folder(conversation["channel"]["name"])
                 history = get_chat_history(conversation["id"])
@@ -158,4 +141,5 @@ def get_chat_list():
                 save_attachments(history)
 
 
-get_chat_list()
+if __name__ == "__main__":
+    get_chat_list()
