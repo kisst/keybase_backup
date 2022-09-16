@@ -95,13 +95,14 @@ def get_chat_history(conversation_id, page=None):
     response = kb_call("read", options)
 
     messages = response["messages"]
-    last = response["pagination"]["last"]
+    last = response["pagination"].get("last", False)
     next_page = response["pagination"]["next"]
 
     if last:
         return messages
 
     return messages + get_chat_history(conversation_id, next_page)
+
 
 def save_history(history, folder):
     """
